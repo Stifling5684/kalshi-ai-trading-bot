@@ -53,7 +53,7 @@ async def scan_and_log() -> int:
         as *paper* signals only.
     """
     from src.clients.kalshi_client import KalshiClient
-    from src.utils.database import DatabaseManager
+    from src.utils.database import DatabaseManager, Position
     from src.strategies.deterministic_filters import generate_paper_signals
 
     logger.info("📡 Scanning markets for deterministic paper trading signals…")
@@ -83,6 +83,20 @@ async def scan_and_log() -> int:
                 reasoning=sig["reasoning"],
                 strategy=sig.get("strategy", "deterministic_filters"),
             )
+            # Also persist as an open paper position in the Phase 1 trading DB.
+            position = Position(
+                market_id=sig["market_id"],
+                side=sig["side"],
+                entry_price=sig["entry_price"],
+                quantity=1,
+                timestamp=datetime.now(timezone.utc),
+                rationale=sig["reasoning"],
+                confidence=sig["confidence"],
+                live=False,
+                status="open",
+                strategy=sig.get("strategy", "deterministic_filters"),
+            )
+            await db.add_position(position)
             signals_logged += 1
             logger.info(
                 f"📝 Signal #{signal_id}: {sig['side']} {sig['market_title']} "
