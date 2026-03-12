@@ -409,7 +409,37 @@ class DatabaseManager(TradingLoggerMixin):
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("""
+
+            # Global counts for diagnostics
+            cur_total = await db.execute("SELECT COUNT(*) FROM markets")
+            total_markets = (await cur_total.fetchone())[0]
+
+            cur_by_status = await db.execute(
+                "SELECT status, COUNT(*) as c FROM markets GROUP BY status"
+            )
+            status_rows = await cur_by_status.fetchall()
+            status_counts = {row["status"]: row["c"] for row in status_rows}
+
+            # Stepwise predicate diagnostics
+            cur_vol = await db.execute(
+                "SELECT COUNT(*) FROM markets WHERE volume >= ?", (volume_min,)
+            )
+            count_vol = (await cur_vol.fetchone())[0]
+
+            cur_exp = await db.execute(
+                "SELECT COUNT(*) FROM markets WHERE volume >= ? AND expiration_ts > ? AND expiration_ts <= ?",
+                (volume_min, now_ts, max_expiry_ts),
+            )
+            count_exp = (await cur_exp.fetchone())[0]
+
+            cur_status = await db.execute(
+                "SELECT COUNT(*) FROM markets WHERE volume >= ? AND expiration_ts > ? AND expiration_ts <= ? AND status = 'active'",
+                (volume_min, now_ts, max_expiry_ts),
+            )
+            count_status = (await cur_status.fetchone())[0]
+
+            cur_final = await db.execute(
+                """
                 SELECT * FROM markets
                 WHERE
                     volume >= ? AND
@@ -417,13 +447,30 @@ class DatabaseManager(TradingLoggerMixin):
                     expiration_ts <= ? AND
                     status = 'active' AND
                     has_position = 0
-            """, (volume_min, now_ts, max_expiry_ts))
-            rows = await cursor.fetchall()
-            
-            markets = []
+                """,
+                (volume_min, now_ts, max_expiry_ts),
+            )
+            rows = await cur_final.fetchall()
+
+            self.logger.info(
+                "Eligibility diagnostics",
+                total_markets=total_markets,
+                status_counts=status_counts,
+                count_volume_ge=volume_min,
+                num_volume_ge=count_vol,
+                num_in_expiry_window=count_exp,
+                num_with_active_status=count_status,
+                num_final=len(rows),
+                now_ts=now_ts,
+                max_expiry_ts=max_expiry_ts,
+            )
+
+            markets: List[Market] = []
             for row in rows:
                 market_dict = dict(row)
-                market_dict['last_updated'] = datetime.fromisoformat(market_dict['last_updated'])
+                market_dict["last_updated"] = datetime.fromisoformat(
+                    market_dict["last_updated"]
+                )
                 markets.append(Market(**market_dict))
             return markets
 

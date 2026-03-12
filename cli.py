@@ -208,7 +208,9 @@ def cmd_inspect_market_pipeline(args: argparse.Namespace) -> None:
         db = DatabaseManager()
         try:
             print("🔎 Refreshing active markets from Kalshi into local DB…")
-            refreshed = await _refresh_active_markets_from_kalshi(kalshi_client=kalshi, db_manager=db)
+            refreshed = await _refresh_active_markets_from_kalshi(
+                kalshi_client=kalshi, db_manager=db
+            )
             print(f"  Fetched/upserted markets: {refreshed}")
 
             trading = _settings.trading
