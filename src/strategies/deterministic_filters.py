@@ -80,30 +80,63 @@ async def _refresh_active_markets_from_kalshi(
         markets: List[Market] = []
         for m in active_markets_data:
             try:
-                yes_bid = m.get("yes_bid")
-                yes_ask = m.get("yes_ask")
-                no_bid = m.get("no_bid")
-                no_ask = m.get("no_ask")
+                # --- Price normalization (prefer *_dollars if present) ---
+                def _parse_float_field(value: Any) -> float:
+                    try:
+                        if value is None:
+                            return 0.0
+                        if isinstance(value, str):
+                            return float(value)
+                        return float(value)
+                    except Exception:
+                        return 0.0
 
-                # If no usable bid/ask prices are present, fall back to neutral 0.5/0.5
-                # so that Phase 1 can still evaluate markets deterministically.
-                if not any([yes_bid, yes_ask, no_bid, no_ask]):
-                    yes_price = 0.5
-                    no_price = 0.5
+                yes_bid_d = _parse_float_field(m.get("yes_bid_dollars"))
+                yes_ask_d = _parse_float_field(m.get("yes_ask_dollars"))
+                no_bid_d = _parse_float_field(m.get("no_bid_dollars"))
+                no_ask_d = _parse_float_field(m.get("no_ask_dollars"))
+
+                if any([yes_bid_d, yes_ask_d, no_bid_d, no_ask_d]):
+                    # Use dollar-space prices directly (0.0–1.0)
+                    yes_mid_d = (yes_bid_d or yes_ask_d or 0.5) + (yes_ask_d or yes_bid_d or 0.5)
+                    yes_mid_d /= 2.0
+                    no_mid_d = (no_bid_d or no_ask_d or 0.5) + (no_ask_d or no_bid_d or 0.5)
+                    no_mid_d /= 2.0
+                    yes_price = yes_mid_d
+                    no_price = no_mid_d
                 else:
-                    yes_mid = ((yes_bid or yes_ask or 50) + (yes_ask or yes_bid or 50)) / 2
-                    no_mid = ((no_bid or no_ask or 50) + (no_ask or no_bid or 50)) / 2
-                    yes_price = yes_mid / 100.0
-                    no_price = no_mid / 100.0
+                    # Fallback to legacy cent fields if dollar fields are absent.
+                    yes_bid = m.get("yes_bid")
+                    yes_ask = m.get("yes_ask")
+                    no_bid = m.get("no_bid")
+                    no_ask = m.get("no_ask")
 
-                # Kalshi may expose different volume-style fields; fall back sensibly.
-                raw_volume = m.get("volume")
-                if raw_volume in (None, 0):
-                    raw_volume = m.get("volume_24h") or m.get("traded") or m.get("open_interest") or 0
-                try:
-                    volume = int(raw_volume)
-                except Exception:
-                    volume = 0
+                    if not any([yes_bid, yes_ask, no_bid, no_ask]):
+                        yes_price = 0.5
+                        no_price = 0.5
+                    else:
+                        yes_mid = ((yes_bid or yes_ask or 50) + (yes_ask or yes_bid or 50)) / 2
+                        no_mid = ((no_bid or no_ask or 50) + (no_ask or no_bid or 50)) / 2
+                        yes_price = yes_mid / 100.0
+                        no_price = no_mid / 100.0
+
+                # --- Liquidity normalization (use volume/volume_24h/open_interest, including *_fp) ---
+                raw_volume_candidates = [
+                    m.get("volume"),
+                    m.get("volume_24h"),
+                    m.get("volume_fp"),
+                    m.get("volume_24h_fp"),
+                    m.get("open_interest"),
+                    m.get("open_interest_fp"),
+                    m.get("traded"),
+                ]
+
+                volume = 0
+                for cand in raw_volume_candidates:
+                    v = _parse_float_field(cand)
+                    if v > 0:
+                        volume = int(v)
+                        break
                 expiration_ts = int(
                     _dt.fromisoformat(m["expiration_time"].replace("Z", "+00:00")).timestamp()
                 )
@@ -112,8 +145,8 @@ async def _refresh_active_markets_from_kalshi(
                     Market(
                         market_id=m["ticker"],
                         title=m.get("title", m["ticker"]),
-                        yes_price=yes_price / 100 if yes_price else 0.0,
-                        no_price=no_price / 100 if no_price else 0.0,
+                        yes_price=yes_price,
+                        no_price=no_price,
                         volume=volume,
                         expiration_ts=expiration_ts,
                         category=m.get("category", "unknown"),

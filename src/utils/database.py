@@ -376,6 +376,13 @@ class DatabaseManager(TradingLoggerMixin):
                 market_dict['last_updated'] = m.last_updated.isoformat()
                 market_dicts.append(market_dict)
 
+            # Conflict target is PRIMARY KEY(market_id), so this acts as a true upsert.
+            self.logger.info(
+                "Upserting markets",
+                count=len(markets),
+                conflict_target="markets(market_id)",
+            )
+
             await db.executemany("""
                 INSERT INTO markets (market_id, title, yes_price, no_price, volume, expiration_ts, category, status, last_updated, has_position)
                 VALUES (:market_id, :title, :yes_price, :no_price, :volume, :expiration_ts, :category, :status, :last_updated, :has_position)
@@ -392,6 +399,15 @@ class DatabaseManager(TradingLoggerMixin):
             """, market_dicts)
             await db.commit()
             self.logger.info(f"Upserted {len(markets)} markets.")
+
+    async def reset_markets(self) -> None:
+        """
+        Clear the markets table. Used for Phase 1 cache maintenance only.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM markets")
+            await db.commit()
+        self.logger.info("Markets table cleared (Phase 1 cache reset).")
 
     async def get_eligible_markets(self, volume_min: int, max_days_to_expiry: int) -> List[Market]:
         """
@@ -419,6 +435,12 @@ class DatabaseManager(TradingLoggerMixin):
             )
             status_rows = await cur_by_status.fetchall()
             status_counts = {row["status"]: row["c"] for row in status_rows}
+
+            # Total active rows regardless of volume/expiry
+            cur_active = await db.execute(
+                "SELECT COUNT(*) FROM markets WHERE status = 'active'"
+            )
+            count_active_total = (await cur_active.fetchone())[0]
 
             # Stepwise predicate diagnostics
             cur_vol = await db.execute(
@@ -461,6 +483,7 @@ class DatabaseManager(TradingLoggerMixin):
                 "Eligibility diagnostics",
                 total_markets=total_markets,
                 status_counts=status_counts,
+                active_total=count_active_total,
                 count_volume_ge=volume_min,
                 num_volume_ge=count_vol,
                 num_in_expiry_window=count_exp,

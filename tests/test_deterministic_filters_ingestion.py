@@ -18,11 +18,14 @@ class DummyKalshiClient:
                 {
                     "ticker": "TEST-MKT-1",
                     "title": "Test market 1",
-                    "yes_bid": 40,
-                    "yes_ask": 40,
-                    "no_bid": 60,
-                    "no_ask": 60,
-                    "volume": 100000,
+                    # Use *_dollars and *_fp-style fields as on real Kalshi payloads.
+                    # Choose an obviously mispriced, high-liquidity market so it
+                    # clearly passes the deterministic score threshold.
+                    "yes_bid_dollars": "0.10",
+                    "yes_ask_dollars": "0.10",
+                    "no_bid_dollars": "0.90",
+                    "no_ask_dollars": "0.90",
+                    "volume_fp": "100000.00",
                     "expiration_time": "2030-12-31T23:59:59Z",
                     "category": "test",
                     "status": "active",

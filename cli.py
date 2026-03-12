@@ -211,12 +211,13 @@ def cmd_inspect_market_pipeline(args: argparse.Namespace) -> None:
             refreshed = await _refresh_active_markets_from_kalshi(
                 kalshi_client=kalshi, db_manager=db
             )
-            print(f"  Fetched/upserted markets: {refreshed}")
+            print(f"  Fetched/upserted markets this run: {refreshed}")
 
             trading = _settings.trading
             min_volume = getattr(trading, "min_volume", 500.0)
             max_days = getattr(trading, "max_time_to_expiry_days", 30)
 
+            # Reuse DB eligibility logic (and diagnostics) to get candidates.
             candidates = await _load_candidate_markets(
                 db_manager=db,
                 min_volume=min_volume,
@@ -240,6 +241,30 @@ def cmd_inspect_market_pipeline(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("\nInspection cancelled by user.")
 
+
+def cmd_reset_market_cache(args: argparse.Namespace) -> None:
+    """
+    Clear the markets table (Phase 1 cache reset).
+
+    This does not affect positions, trades, or any live trading state. It only
+    clears cached market snapshots used by the deterministic scanner.
+    """
+    import asyncio as _asyncio
+
+    from src.utils.database import DatabaseManager
+    from src.utils.logging_setup import setup_logging
+
+    setup_logging(log_level="INFO")
+
+    async def _run() -> None:
+        db = DatabaseManager()
+        await db.reset_markets()
+        print("🧹 Cleared markets table (Phase 1 market cache reset).")
+
+    try:
+        _asyncio.run(_run())
+    except KeyboardInterrupt:
+        print("\nReset cancelled by user.")
 
 def cmd_health(args: argparse.Namespace) -> None:
     """Run health checks on configuration, API, and database."""
@@ -421,6 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python cli.py status              Check portfolio balance and positions\n"
             "  python cli.py health              Verify all connections and config\n"
             "  python cli.py inspect-market-pipeline  Inspect deterministic market pipeline\n"
+            "  python cli.py reset-market-cache  Clear cached markets in SQLite\n"
             "  python cli.py verify-paper-safety Confirm Phase 1 paper-only constraints\n"
         ),
     )
@@ -491,6 +517,17 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run a single refresh + candidate load cycle and print diagnostics.",
     )
     p_inspect.set_defaults(func=cmd_inspect_market_pipeline)
+
+    # --- reset-market-cache (maintenance) ---
+    p_reset = subparsers.add_parser(
+        "reset-market-cache",
+        help="Clear cached markets in SQLite (Phase 1 only)",
+        description=(
+            "Clear the markets table used for Phase 1 deterministic scanning. "
+            "Does NOT affect positions or trades."
+        ),
+    )
+    p_reset.set_defaults(func=cmd_reset_market_cache)
 
     # --- verify-paper-safety ---
     p_verify = subparsers.add_parser(
