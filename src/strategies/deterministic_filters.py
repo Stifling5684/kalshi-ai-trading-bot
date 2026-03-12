@@ -64,10 +64,16 @@ async def _refresh_active_markets_from_kalshi(
             logger.info("No markets returned from Kalshi on page", page=page)
             break
 
-        # Treat Kalshi "open" (and similar) statuses as active for Phase 1.
-        open_like_statuses = {"open", "unopened", "paused"}
+        # Status breakdown for debugging / transparency.
+        status_counts: Dict[str, int] = {}
+        for m in markets_page:
+            s = str(m.get("status", "unknown"))
+            status_counts[s] = status_counts.get(s, 0) + 1
+
+        # Treat Kalshi "open-like" statuses as active for Phase 1.
+        open_like_statuses = {"open", "active", "unopened", "paused"}
         active_markets_data = [
-            m for m in markets_page if m.get("status") in open_like_statuses
+            m for m in markets_page if str(m.get("status")) in open_like_statuses
         ]
         total_fetched += len(active_markets_data)
 
@@ -107,6 +113,7 @@ async def _refresh_active_markets_from_kalshi(
                 fetched=len(active_markets_data),
                 upserted=len(markets),
                 total_fetched=total_fetched,
+                status_counts=status_counts,
             )
 
         cursor = response.get("cursor")
