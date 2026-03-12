@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Paper Trader — Signal-only mode for the Kalshi AI Trading Bot.
+Paper Trader — Phase 1 deterministic, paper-only mode for the Kalshi bot.
 
-Uses the same market scanning and AI analysis as the live bot, but instead of
-placing real orders it logs every signal to SQLite.  A companion HTML dashboard
-shows cumulative P&L, win rate, and individual signals.
+Phase 1 removes all LLM/ensemble logic and **never** places live orders. It:
+  - Scans markets using simple, deterministic filters (liquidity, spread, time-to-expiry).
+  - Scores opportunities using a basic dislocation / imbalance heuristic.
+  - Logs recommended paper signals to SQLite only.
+  - Generates a static HTML dashboard for review.
 
 Usage:
     python paper_trader.py                # Scan once, log signals, generate dashboard
@@ -40,84 +42,57 @@ DASHBOARD_OUT = os.path.join(os.path.dirname(__file__), "docs", "paper_dashboard
 # Scanning: reuse the existing ingestion + decision pipeline
 # ---------------------------------------------------------------------------
 
-async def scan_and_log():
+async def scan_and_log() -> int:
     """
-    Scan markets via the existing ingest pipeline, run ensemble decisions,
-    and log any actionable signals to the paper-trading database.
+    Scan markets using deterministic filters and log any paper-only signals.
+
+    This Phase 1 implementation:
+      - Reads eligible markets via the database manager and Kalshi client.
+      - Applies liquidity, spread, and time-to-expiry filters.
+      - Scores simple dislocation / imbalance and logs high-score candidates
+        as *paper* signals only.
     """
     from src.clients.kalshi_client import KalshiClient
-    from src.clients.xai_client import XAIClient
     from src.utils.database import DatabaseManager
-    from src.jobs.ingest import run_ingestion
-    from src.jobs.decide import make_decision_for_market
+    from src.strategies.deterministic_filters import generate_paper_signals
 
-    logger.info("📡 Scanning markets for paper trading signals…")
+    logger.info("📡 Scanning markets for deterministic paper trading signals…")
 
     kalshi = KalshiClient()
     db = DatabaseManager()
-    xai = XAIClient(db_manager=db)
 
-    # 1. Ingest fresh market data
     try:
-        markets = await run_ingestion()
-        if not markets:
-            logger.info("No markets returned from ingestion.")
-            return 0
+        signals = await generate_paper_signals(
+            kalshi_client=kalshi,
+            db_manager=db,
+            trading_settings=settings.trading,
+        )
     except Exception as e:
-        logger.error(f"Ingestion failed: {e}")
+        logger.error(f"Deterministic scan failed: {e}")
         return 0
 
     signals_logged = 0
-
-    # 2. Run decision on each market
-    for market in markets:
+    for sig in signals:
         try:
-            market_id = market.get("ticker") or market.get("market_id", "")
-            title = market.get("title", market_id)
-
-            decision = await make_decision_for_market(
-                market_data=market,
-                kalshi_client=kalshi,
-                xai_client=xai,
-                db_manager=db,
-            )
-
-            if decision is None:
-                continue
-
-            action = decision.get("action", "skip")
-            if action in ("skip", "hold", None):
-                continue
-
-            side = decision.get("side", "NO")
-            confidence = decision.get("confidence", 0)
-            limit_price = decision.get("limit_price", market.get("no_ask", 0))
-            reasoning = decision.get("reasoning", "")
-
-            # Only log signals with meaningful confidence edge
-            if confidence < 0.55:
-                continue
-
             signal_id = log_signal(
-                market_id=market_id,
-                market_title=title,
-                side=side,
-                entry_price=limit_price,
-                confidence=confidence,
-                reasoning=reasoning,
-                strategy=decision.get("strategy", "directional"),
+                market_id=sig["market_id"],
+                market_title=sig["market_title"],
+                side=sig["side"],
+                entry_price=sig["entry_price"],
+                confidence=sig["confidence"],
+                reasoning=sig["reasoning"],
+                strategy=sig.get("strategy", "deterministic_filters"),
             )
             signals_logged += 1
             logger.info(
-                f"📝 Signal #{signal_id}: {side} {title} @ {limit_price:.0%} "
-                f"(conf={confidence:.0%}) — {reasoning[:60]}"
+                f"📝 Signal #{signal_id}: {sig['side']} {sig['market_title']} "
+                f"@ {sig['entry_price']:.0%} (score={sig['confidence']:.0%}) — {sig['reasoning'][:80]}"
             )
-
         except Exception as e:
-            logger.warning(f"Decision failed for market: {e}")
+            logger.warning(f"Failed to log signal for {sig.get('market_id')}: {e}")
             continue
 
-    logger.info(f"✅ Logged {signals_logged} paper signals")
+    logger.info(f"✅ Logged {signals_logged} deterministic paper signals")
     return signals_logged
 
 

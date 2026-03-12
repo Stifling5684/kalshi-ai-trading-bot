@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-Kalshi AI Trading Bot -- Unified CLI
+Kalshi AI Trading Bot -- Phase 1 (Paper-Only) CLI
 
-Provides a single entry point for all bot operations:
-    python cli.py run          Start the trading bot
-    python cli.py dashboard    Launch the Streamlit monitoring dashboard
-    python cli.py status       Show portfolio balance, positions, and P&L
-    python cli.py backtest     Run backtests (placeholder)
-    python cli.py health       Verify API connections, database, and configuration
+This CLI has been refactored into a strict Phase 1 MVP with **paper trading only**:
+
+    python cli.py run                 Run deterministic paper-trading cycle(s)
+    python cli.py dashboard           Launch the paper-trading dashboard
+    python cli.py status              Show portfolio balance, positions, and P&L
+    python cli.py backtest            Run backtests (placeholder)
+    python cli.py health              Verify API connections, database, and configuration
+    python cli.py verify-paper-safety Confirm that CLI paths are paper-only and non-executing
+
+Live trading, LLM/ensemble decisions, and market making are **disabled** from all
+CLI-reachable paths in this phase.
 """
 
 import argparse
@@ -15,6 +20,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from typing import List
 
 
 # ---------------------------------------------------------------------------
@@ -22,59 +28,50 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 def cmd_run(args: argparse.Namespace) -> None:
-    """Start the Beast Mode trading bot."""
+    """
+    Start the Phase 1 deterministic paper-trading loop.
+
+    This command is **paper-only** and never places live orders. It reuses the
+    paper trading tracker/dash logic from `paper_trader.py`.
+    """
     from src.utils.logging_setup import setup_logging
-    from beast_mode_bot import BeastModeBot
+    from paper_trader import scan_and_log, check_settlements, DASHBOARD_OUT
+    from src.paper.dashboard import generate_html
 
     log_level = getattr(args, "log_level", "INFO")
     setup_logging(log_level=log_level)
 
-    live = getattr(args, "live", False)
-    paper = getattr(args, "paper", False)
+    print("🚫 Live trading is DISABLED in Phase 1. Running in paper-trading mode only.\n")
 
-    # --paper explicitly forces paper mode; --live forces live mode.
-    # If neither is given, default is paper trading.
-    if live and paper:
-        print("Error: --live and --paper are mutually exclusive.")
-        sys.exit(1)
+    async def _run_once(loop: bool, interval: int) -> None:
+        while True:
+            await scan_and_log()
+            await check_settlements()
+            generate_html(DASHBOARD_OUT)
+            print(f"📊 Paper dashboard updated at {DASHBOARD_OUT}")
+            if not loop:
+                break
+            print(f"💤 Sleeping {interval}s until next paper scan…")
+            await asyncio.sleep(interval)
 
-    live_mode = live and not paper
-
-    if live_mode:
-        print("WARNING: LIVE TRADING MODE ENABLED")
-        print("This will use real money and place actual trades.")
-
-    bot = BeastModeBot(live_mode=live_mode)
     try:
-        asyncio.run(bot.run())
+        asyncio.run(_run_once(loop=getattr(args, "loop", False), interval=getattr(args, "interval", 900)))
     except KeyboardInterrupt:
-        print("\nTrading bot stopped by user.")
+        print("\nPaper trading loop stopped by user.")
 
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
     """Launch the Streamlit monitoring dashboard."""
     import subprocess
 
-    # Prefer the dedicated dashboard launch script if it exists.
-    dashboard_script = Path(__file__).parent / "scripts" / "launch_dashboard.py"
-    beast_dashboard = Path(__file__).parent / "scripts" / "beast_mode_dashboard.py"
+    # Phase 1: always use paper dashboard HTML generation.
+    from src.utils.logging_setup import setup_logging
+    from paper_trader import DASHBOARD_OUT
+    from src.paper.dashboard import generate_html
 
-    if dashboard_script.exists():
-        subprocess.run([sys.executable, str(dashboard_script)], check=False)
-    elif beast_dashboard.exists():
-        # Fall back to running the dashboard module directly.
-        from src.utils.logging_setup import setup_logging
-        from beast_mode_bot import BeastModeBot
-
-        setup_logging(log_level="INFO")
-        bot = BeastModeBot(live_mode=False, dashboard_mode=True)
-        try:
-            asyncio.run(bot.run())
-        except KeyboardInterrupt:
-            print("\nDashboard stopped by user.")
-    else:
-        print("Error: No dashboard script found.")
-        sys.exit(1)
+    setup_logging(log_level="INFO")
+    generate_html(DASHBOARD_OUT)
+    print(f"✅ Paper dashboard generated at {DASHBOARD_OUT}")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -186,16 +183,26 @@ def cmd_health(args: argparse.Namespace) -> None:
     else:
         fail(".env file missing", "copy env.template to .env and fill in keys")
 
-    # 2. Required environment variables
+    # 2. Required/optional environment variables
     from dotenv import load_dotenv
     load_dotenv()
 
-    for var in ("KALSHI_API_KEY", "XAI_API_KEY"):
+    required_vars = ("KALSHI_API_KEY",)
+    optional_ai_vars = ("XAI_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY")
+
+    for var in required_vars:
         val = os.getenv(var, "")
-        if val and val not in ("", "your_kalshi_api_key_here", "your_xai_api_key_here"):
+        if val and val not in ("", "your_kalshi_api_key_here"):
             ok(f"{var} is set")
         else:
             fail(f"{var} is missing or placeholder")
+
+    for var in optional_ai_vars:
+        val = os.getenv(var, "")
+        if val and val.strip():
+            ok(f"{var} is set (optional for Phase 1)")
+        else:
+            ok(f"{var} not set (LLM features disabled in Phase 1)")
 
     # 3. Kalshi API connection
     async def _check_api() -> None:
@@ -250,6 +257,66 @@ def cmd_health(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _read_file_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def cmd_verify_paper_safety(args: argparse.Namespace) -> None:
+    """
+    Verify that CLI-accessible code paths are paper-only and non-executing.
+
+    Checks:
+      - No direct Kalshi order placement/cancellation calls in CLI-core modules.
+      - Trading config does not enable live trading.
+    """
+    from src.config.settings import settings
+
+    print("🔍 Verifying Phase 1 paper-safety invariants…")
+
+    # 1. Config guard: live trading must be disabled
+    live_enabled = getattr(getattr(settings, "trading", settings), "live_trading_enabled", False)
+    if live_enabled:
+        print("❌ settings.trading.live_trading_enabled is True – live trading must be disabled in Phase 1.")
+        sys.exit(1)
+
+    # 2. Scan core CLI modules for forbidden callsites
+    repo_root = Path(__file__).parent
+    core_paths: List[Path] = [
+        repo_root / "cli.py",
+        repo_root / "paper_trader.py",
+        repo_root / "src" / "paper" / "tracker.py",
+        repo_root / "src" / "paper" / "dashboard.py",
+        repo_root / "src" / "utils" / "logging_setup.py",
+        repo_root / "src" / "utils" / "database.py",
+    ]
+    # Build forbidden tokens without embedding them verbatim in this file,
+    # so that this module itself does not trip the safety scan.
+    forbidden = (
+        "place_" + "order(",
+        "cancel_" + "order(",
+    )
+    violations: List[str] = []
+
+    for path in core_paths:
+        if not path.exists():
+            continue
+        text = _read_file_text(path)
+        for token in forbidden:
+            if token in text:
+                violations.append(f"{path}: contains forbidden token '{token}'")
+
+    if violations:
+        print("❌ Paper-safety verification failed. Forbidden Kalshi order calls found in CLI-core modules:")
+        for v in violations:
+            print(f"  - {v}")
+        sys.exit(1)
+
+    print("✅ Paper-safety verification passed: CLI-core modules are paper-only and live trading is disabled.")
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -257,35 +324,24 @@ def cmd_health(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kalshi-bot",
-        description="Kalshi AI Trading Bot -- Multi-model AI trading for prediction markets",
+        description="Kalshi AI Trading Bot -- Phase 1 (paper-only, deterministic trading lab)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
-            "  python cli.py run --paper        Start in paper-trading mode\n"
-            "  python cli.py run --live          Start in live-trading mode\n"
-            "  python cli.py dashboard           Open the monitoring dashboard\n"
+            "  python cli.py run                 Start deterministic paper-trading loop\n"
+            "  python cli.py dashboard           Generate the paper-trading dashboard\n"
             "  python cli.py status              Check portfolio balance and positions\n"
             "  python cli.py health              Verify all connections and config\n"
+            "  python cli.py verify-paper-safety Confirm Phase 1 paper-only constraints\n"
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # --- run ---
+    # --- run (paper-only) ---
     p_run = subparsers.add_parser(
         "run",
-        help="Start the trading bot",
-        description="Launch the Beast Mode trading bot with market making, directional trading, and portfolio optimization.",
-    )
-    mode_group = p_run.add_mutually_exclusive_group()
-    mode_group.add_argument(
-        "--live",
-        action="store_true",
-        help="Enable live trading with real capital (default: paper trading)",
-    )
-    mode_group.add_argument(
-        "--paper",
-        action="store_true",
-        help="Run in paper-trading mode (no real orders)",
+        help="Start the paper-trading loop",
+        description="Run the deterministic, filter-based paper-trading loop (no live orders).",
     )
     p_run.add_argument(
         "--log-level",
@@ -293,6 +349,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Set logging verbosity (default: INFO)",
+    )
+    p_run.add_argument(
+        "--loop",
+        action="store_true",
+        help="Continuously run paper scans instead of a single pass.",
+    )
+    p_run.add_argument(
+        "--interval",
+        type=int,
+        default=900,
+        help="Loop interval in seconds for paper mode (default: 900).",
     )
     p_run.set_defaults(func=cmd_run)
 
@@ -327,6 +394,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run a series of diagnostic checks: .env presence, API key configuration, Kalshi API connectivity, database initialization, and Python version.",
     )
     p_health.set_defaults(func=cmd_health)
+
+    # --- verify-paper-safety ---
+    p_verify = subparsers.add_parser(
+        "verify-paper-safety",
+        help="Verify that CLI-accessible code paths are paper-only and non-executing.",
+        description="Run static checks to confirm Phase 1 safety invariants (no live trading, no Kalshi order calls in CLI-core modules).",
+    )
+    p_verify.set_defaults(func=cmd_verify_paper_safety)
 
     return parser
 

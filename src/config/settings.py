@@ -88,13 +88,14 @@ class TradingConfig:
     default_position_size: float = 3.0  # REDUCED: Now using Kelly Criterion as primary method (was 5%, now 3%)
     position_size_multiplier: float = 1.0  # Multiplier for AI confidence
     
-    # Kelly Criterion settings (PRIMARY position sizing method) - MORE AGGRESSIVE
-    use_kelly_criterion: bool = True        # Use Kelly Criterion for position sizing (PRIMARY METHOD)
-    kelly_fraction: float = 0.75            # INCREASED: More aggressive Kelly multiplier (was 0.5, now 0.75)
-    max_single_position: float = 0.05       # INCREASED: Higher position cap (was 0.03, now 5%)
+    # Kelly Criterion settings (PRIMARY position sizing method)
+    # NOTE: Phase 1 uses paper trading only, so these are retained for future phases.
+    use_kelly_criterion: bool = True
+    kelly_fraction: float = 0.75
+    max_single_position: float = 0.05
     
-    # Live trading mode control
-    live_trading_enabled: bool = False      # Set to True for live trading (defaults to paper mode for safety)
+    # Live trading mode control (hard-disabled in Phase 1)
+    live_trading_enabled: bool = False      # MUST remain False in Phase 1 (verified by cli.py verify-paper-safety)
     paper_trading_mode: bool = True         # Paper trading for testing
     
     # Trading frequency - MORE FREQUENT
@@ -245,8 +246,9 @@ class Settings:
         if not self.api.kalshi_api_key:
             raise ValueError("KALSHI_API_KEY environment variable is required")
 
-        if not self.api.xai_api_key:
-            raise ValueError("XAI_API_KEY environment variable is required")
+        # In Phase 1 (paper-only) we do not require XAI_API_KEY to be set.
+        # LLM/ensemble features are disabled from CLI paths, so this is a soft requirement.
+        # Downstream callers that actually use LLM features should still validate explicitly.
 
         if self.trading.max_position_size_pct <= 0 or self.trading.max_position_size_pct > 100:
             raise ValueError("max_position_size_pct must be between 0 and 100")
