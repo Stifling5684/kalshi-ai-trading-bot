@@ -25,7 +25,7 @@ class DummyKalshiClient:
                     "volume": 100000,
                     "expiration_time": "2030-12-31T23:59:59Z",
                     "category": "test",
-                    "status": "active",
+                    "status": "open",
                 }
             ],
             "cursor": None,

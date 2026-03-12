@@ -47,7 +47,14 @@ async def _refresh_active_markets_from_kalshi(
     while page < max_pages:
         page += 1
         try:
-            response = await kalshi_client.get_markets(limit=per_page, cursor=cursor, status="active")
+            logger.info(
+                "Fetching markets page from Kalshi",
+                page=page,
+                limit=per_page,
+                cursor=cursor,
+            )
+            # Do not pass an invalid status filter; fetch a slice and filter locally.
+            response = await kalshi_client.get_markets(limit=per_page, cursor=cursor)
         except Exception as e:
             logger.warning("Failed to fetch markets page from Kalshi", page=page, error=str(e))
             break
@@ -57,7 +64,11 @@ async def _refresh_active_markets_from_kalshi(
             logger.info("No markets returned from Kalshi on page", page=page)
             break
 
-        active_markets_data = [m for m in markets_page if m.get("status") == "active"]
+        # Treat Kalshi "open" (and similar) statuses as active for Phase 1.
+        open_like_statuses = {"open", "unopened", "paused"}
+        active_markets_data = [
+            m for m in markets_page if m.get("status") in open_like_statuses
+        ]
         total_fetched += len(active_markets_data)
 
         markets: List[Market] = []
@@ -79,7 +90,7 @@ async def _refresh_active_markets_from_kalshi(
                         volume=volume,
                         expiration_ts=expiration_ts,
                         category=m.get("category", "unknown"),
-                        status=m.get("status", "unknown"),
+                        status="active",
                         last_updated=_dt.now(),
                         has_position=False,
                     )
