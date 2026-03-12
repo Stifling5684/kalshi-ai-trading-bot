@@ -34,13 +34,17 @@ Kalshi credentials. Phase 1 does not place any live trades.
 Run these after setup and after any code change:
 
 ```bash
-# Verify paper-only safety invariants
+# Verify paper-only safety invariants (no keys required)
 python cli.py verify-paper-safety
 
-# Check .env, API connectivity (read-only), and database initialization
+# Regenerate the paper dashboard without touching Kalshi (no keys required)
+python cli.py dashboard
+
+# With Kalshi API key + private key configured, you can also:
+# - Check .env, API connectivity (read-only), and database initialization
 python cli.py health
 
-# Show current portfolio balance and positions (read-only)
+# - Show current portfolio balance and positions (read-only)
 python cli.py status
 ```
 
@@ -62,6 +66,11 @@ This will:
 - Log paper-only signals into `data/paper_trades.db`.
 - Regenerate the paper trading dashboard HTML.
 
+If you run this **without** a Kalshi API key and private key file, it will
+fail fast with a short message explaining that keys are required for
+read-only market access in order to fetch markets. It still never places
+live orders in Phase 1.
+
 #### 3.2 Continuous paper-trading loop
 
 ```bash
@@ -77,7 +86,27 @@ Stop with `Ctrl-C`.
 
 ---
 
-### 4. Paper dashboard
+### 4. Inspecting the market pipeline (diagnostics)
+
+If you ever see `count=0` candidate markets in the logs, you can run a
+diagnostic pass to inspect the ingestion + filtering pipeline:
+
+```bash
+python cli.py inspect-market-pipeline
+```
+
+This will:
+
+- Fetch a slice of active markets from Kalshi (read-only).
+- Upsert them into the local SQLite database.
+- Show how many markets are eligible after deterministic filters.
+- Print a small sample of candidate markets.
+
+This command is **paper-only** and never places orders.
+
+---
+
+### 5. Paper dashboard
 
 To regenerate the dashboard without scanning:
 

@@ -58,6 +58,22 @@ def cmd_run(args: argparse.Namespace) -> None:
         asyncio.run(_run_once(loop=getattr(args, "loop", False), interval=getattr(args, "interval", 900)))
     except KeyboardInterrupt:
         print("\nPaper trading loop stopped by user.")
+    except Exception as exc:
+        # Surface common auth/key errors in a friendly way for local dev.
+        msg = str(exc)
+        if "KALSHI_API_KEY" in msg or "Failed to load private key" in msg or "Private key file not found" in msg:
+            print(
+                "❌ Unable to start paper scan: Kalshi API key and private key are required "
+                "for read-only market access.\n\n"
+                "This is a Phase 1 requirement *only* for fetching markets; no live orders "
+                "are ever placed.\n"
+                "If you're just smoke-testing locally without keys, you can run:\n"
+                "  python cli.py verify-paper-safety\n"
+                "  python cli.py dashboard\n"
+                "instead of the full paper scan."
+            )
+            sys.exit(1)
+        raise
 
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
@@ -151,6 +167,76 @@ def cmd_backtest(args: argparse.Namespace) -> None:
     print("    - Monte Carlo simulation")
     print()
     print("=" * 56)
+
+
+def cmd_inspect_market_pipeline(args: argparse.Namespace) -> None:
+    """
+    Diagnostic command: inspect the deterministic market pipeline for Phase 1.
+
+    Runs a single refresh + candidate load + filter cycle and prints summary
+    counts without logging any signals.
+    """
+    import asyncio as _asyncio
+
+    from src.clients.kalshi_client import KalshiClient
+    from src.utils.database import DatabaseManager
+    from src.strategies.deterministic_filters import (
+        _refresh_active_markets_from_kalshi,
+        _load_candidate_markets,
+    )
+    from src.config.settings import settings as _settings
+    from src.utils.logging_setup import setup_logging
+
+    setup_logging(log_level="INFO")
+
+    async def _run() -> None:
+        try:
+            kalshi = KalshiClient()
+        except Exception as exc:
+            msg = str(exc)
+            if "KALSHI_API_KEY" in msg or "Failed to load private key" in msg or "Private key file not found" in msg:
+                print(
+                    "❌ Cannot inspect market pipeline: Kalshi API key and private key are required "
+                    "for read-only market access.\n\n"
+                    "You can still run without keys:\n"
+                    "  python cli.py verify-paper-safety\n"
+                    "  python cli.py dashboard"
+                )
+                return
+            raise
+
+        db = DatabaseManager()
+        try:
+            print("🔎 Refreshing active markets from Kalshi into local DB…")
+            refreshed = await _refresh_active_markets_from_kalshi(kalshi_client=kalshi, db_manager=db)
+            print(f"  Fetched/upserted markets: {refreshed}")
+
+            trading = _settings.trading
+            min_volume = getattr(trading, "min_volume", 500.0)
+            max_days = getattr(trading, "max_time_to_expiry_days", 30)
+
+            candidates = await _load_candidate_markets(
+                db_manager=db,
+                min_volume=min_volume,
+                max_days_to_expiry=max_days,
+            )
+            print(f"  Eligible candidates in DB: {len(candidates)}")
+
+            if candidates[:5]:
+                print("\n  Sample candidates:")
+                for m in candidates[:5]:
+                    print(
+                        f"   - {m.market_id}: {m.title} "
+                        f"vol={m.volume}, exp_ts={m.expiration_ts}, "
+                        f"yes={m.yes_price:.2f}, no={m.no_price:.2f}"
+                    )
+        finally:
+            await kalshi.close()
+
+    try:
+        _asyncio.run(_run())
+    except KeyboardInterrupt:
+        print("\nInspection cancelled by user.")
 
 
 def cmd_health(args: argparse.Namespace) -> None:
@@ -332,6 +418,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python cli.py dashboard           Generate the paper-trading dashboard\n"
             "  python cli.py status              Check portfolio balance and positions\n"
             "  python cli.py health              Verify all connections and config\n"
+            "  python cli.py inspect-market-pipeline  Inspect deterministic market pipeline\n"
             "  python cli.py verify-paper-safety Confirm Phase 1 paper-only constraints\n"
         ),
     )
@@ -394,6 +481,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run a series of diagnostic checks: .env presence, API key configuration, Kalshi API connectivity, database initialization, and Python version.",
     )
     p_health.set_defaults(func=cmd_health)
+
+    # --- inspect-market-pipeline (diagnostic) ---
+    p_inspect = subparsers.add_parser(
+        "inspect-market-pipeline",
+        help="Inspect deterministic market ingestion/filtering pipeline",
+        description="Run a single refresh + candidate load cycle and print diagnostics.",
+    )
+    p_inspect.set_defaults(func=cmd_inspect_market_pipeline)
 
     # --- verify-paper-safety ---
     p_verify = subparsers.add_parser(

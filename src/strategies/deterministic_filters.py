@@ -26,6 +26,86 @@ from src.utils.logging_setup import get_trading_logger
 logger = get_trading_logger("deterministic_filters")
 
 
+async def _refresh_active_markets_from_kalshi(
+    kalshi_client: Any,
+    db_manager: DatabaseManager,
+    max_pages: int = 3,
+    per_page: int = 100,
+) -> int:
+    """
+    Fetch a reasonable slice of active markets from Kalshi and upsert into the DB.
+
+    Phase 1 uses this *read-only* ingestion path instead of the old ingest/AI
+    pipeline. It never places orders.
+    """
+    total_fetched = 0
+    page = 0
+    cursor = None
+
+    from datetime import datetime as _dt
+
+    while page < max_pages:
+        page += 1
+        try:
+            response = await kalshi_client.get_markets(limit=per_page, cursor=cursor, status="active")
+        except Exception as e:
+            logger.warning("Failed to fetch markets page from Kalshi", page=page, error=str(e))
+            break
+
+        markets_page = response.get("markets", []) or []
+        if not markets_page:
+            logger.info("No markets returned from Kalshi on page", page=page)
+            break
+
+        active_markets_data = [m for m in markets_page if m.get("status") == "active"]
+        total_fetched += len(active_markets_data)
+
+        markets: List[Market] = []
+        for m in active_markets_data:
+            try:
+                yes_price = (m.get("yes_bid", 0) + m.get("yes_ask", 0)) / 2
+                no_price = (m.get("no_bid", 0) + m.get("no_ask", 0)) / 2
+                volume = int(m.get("volume", 0))
+                expiration_ts = int(
+                    _dt.fromisoformat(m["expiration_time"].replace("Z", "+00:00")).timestamp()
+                )
+
+                markets.append(
+                    Market(
+                        market_id=m["ticker"],
+                        title=m.get("title", m["ticker"]),
+                        yes_price=yes_price / 100 if yes_price else 0.0,
+                        no_price=no_price / 100 if no_price else 0.0,
+                        volume=volume,
+                        expiration_ts=expiration_ts,
+                        category=m.get("category", "unknown"),
+                        status=m.get("status", "unknown"),
+                        last_updated=_dt.now(),
+                        has_position=False,
+                    )
+                )
+            except Exception as e:
+                logger.warning("Failed to map market from Kalshi", ticker=m.get("ticker"), error=str(e))
+                continue
+
+        if markets:
+            await db_manager.upsert_markets(markets)
+            logger.info(
+                "Upserted active markets from Kalshi for Phase 1",
+                page=page,
+                fetched=len(active_markets_data),
+                upserted=len(markets),
+                total_fetched=total_fetched,
+            )
+
+        cursor = response.get("cursor")
+        if not cursor:
+            break
+
+    logger.info("Finished refreshing active markets from Kalshi", total_fetched=total_fetched)
+    return total_fetched
+
+
 async def _load_candidate_markets(
     db_manager: DatabaseManager,
     min_volume: float,
@@ -116,12 +196,21 @@ async def generate_paper_signals(
     max_days_to_expiry = getattr(trading_settings, "max_time_to_expiry_days", 30)
     max_spread = getattr(trading_settings, "max_bid_ask_spread", 0.15)
 
+    # 0. Refresh a slice of active markets from Kalshi into the local DB (read-only).
+    refreshed = await _refresh_active_markets_from_kalshi(
+        kalshi_client=kalshi_client,
+        db_manager=db_manager,
+    )
+    logger.info("Refreshed active markets from Kalshi", count=refreshed)
+
+    # 1. Load eligible markets from DB using deterministic eligibility logic.
     markets = await _load_candidate_markets(
         db_manager=db_manager,
         min_volume=min_volume,
         max_days_to_expiry=max_days_to_expiry,
     )
     signals: List[Dict[str, Any]] = []
+    rejected_volume = rejected_expiry = rejected_spread = rejected_score = 0
 
     for m in markets:
         try:
@@ -131,14 +220,18 @@ async def generate_paper_signals(
 
             # Filters
             if m.volume < min_volume:
+                rejected_volume += 1
                 continue
             if days <= 0.0 or days > max_days_to_expiry:
+                rejected_expiry += 1
                 continue
             if spread > max_spread:
+                rejected_spread += 1
                 continue
 
             if score <= 0.2:
                 # Require at least a modest dislocation to avoid noise.
+                rejected_score += 1
                 continue
 
             side = _choose_side(m)
@@ -161,9 +254,19 @@ async def generate_paper_signals(
                 }
             )
         except Exception as e:
-            logger.warning(f"Failed to build deterministic signal for {getattr(m, 'market_id', '?')}: {e}")
+            logger.warning(
+                f"Failed to build deterministic signal for {getattr(m, 'market_id', '?')}: {e}"
+            )
             continue
 
-    logger.info("Deterministic filters produced paper signals", count=len(signals))
+    logger.info(
+        "Deterministic filters produced paper signals",
+        total_candidates=len(markets),
+        produced=len(signals),
+        rejected_volume=rejected_volume,
+        rejected_expiry=rejected_expiry,
+        rejected_spread=rejected_spread,
+        rejected_score=rejected_score,
+    )
     return signals
 
