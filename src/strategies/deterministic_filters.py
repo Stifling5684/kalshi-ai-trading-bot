@@ -82,7 +82,15 @@ async def _refresh_active_markets_from_kalshi(
             try:
                 yes_price = (m.get("yes_bid", 0) + m.get("yes_ask", 0)) / 2
                 no_price = (m.get("no_bid", 0) + m.get("no_ask", 0)) / 2
-                volume = int(m.get("volume", 0))
+
+                # Kalshi may expose different volume-style fields; fall back sensibly.
+                raw_volume = m.get("volume")
+                if raw_volume in (None, 0):
+                    raw_volume = m.get("volume_24h") or m.get("traded") or 0
+                try:
+                    volume = int(raw_volume)
+                except Exception:
+                    volume = 0
                 expiration_ts = int(
                     _dt.fromisoformat(m["expiration_time"].replace("Z", "+00:00")).timestamp()
                 )

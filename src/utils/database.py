@@ -438,6 +438,11 @@ class DatabaseManager(TradingLoggerMixin):
             )
             count_status = (await cur_status.fetchone())[0]
 
+            cur_prices = await db.execute(
+                "SELECT COUNT(*) FROM markets WHERE yes_price > 0 AND no_price > 0"
+            )
+            count_prices = (await cur_prices.fetchone())[0]
+
             cur_final = await db.execute(
                 """
                 SELECT * FROM markets
@@ -460,10 +465,23 @@ class DatabaseManager(TradingLoggerMixin):
                 num_volume_ge=count_vol,
                 num_in_expiry_window=count_exp,
                 num_with_active_status=count_status,
+                num_with_non_null_prices=count_prices,
                 num_final=len(rows),
                 now_ts=now_ts,
                 max_expiry_ts=max_expiry_ts,
             )
+
+            # Log a small sample of stored markets for field-level inspection.
+            cur_sample = await db.execute(
+                """
+                SELECT market_id, status, volume, expiration_ts, yes_price, no_price
+                FROM markets
+                ORDER BY last_updated DESC
+                LIMIT 3
+                """
+            )
+            sample_rows = [dict(r) for r in await cur_sample.fetchall()]
+            self.logger.info("Market sample after upsert", sample_rows=sample_rows)
 
             markets: List[Market] = []
             for row in rows:
