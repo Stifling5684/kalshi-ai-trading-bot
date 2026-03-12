@@ -80,13 +80,26 @@ async def _refresh_active_markets_from_kalshi(
         markets: List[Market] = []
         for m in active_markets_data:
             try:
-                yes_price = (m.get("yes_bid", 0) + m.get("yes_ask", 0)) / 2
-                no_price = (m.get("no_bid", 0) + m.get("no_ask", 0)) / 2
+                yes_bid = m.get("yes_bid")
+                yes_ask = m.get("yes_ask")
+                no_bid = m.get("no_bid")
+                no_ask = m.get("no_ask")
+
+                # If no usable bid/ask prices are present, fall back to neutral 0.5/0.5
+                # so that Phase 1 can still evaluate markets deterministically.
+                if not any([yes_bid, yes_ask, no_bid, no_ask]):
+                    yes_price = 0.5
+                    no_price = 0.5
+                else:
+                    yes_mid = ((yes_bid or yes_ask or 50) + (yes_ask or yes_bid or 50)) / 2
+                    no_mid = ((no_bid or no_ask or 50) + (no_ask or no_bid or 50)) / 2
+                    yes_price = yes_mid / 100.0
+                    no_price = no_mid / 100.0
 
                 # Kalshi may expose different volume-style fields; fall back sensibly.
                 raw_volume = m.get("volume")
                 if raw_volume in (None, 0):
-                    raw_volume = m.get("volume_24h") or m.get("traded") or 0
+                    raw_volume = m.get("volume_24h") or m.get("traded") or m.get("open_interest") or 0
                 try:
                     volume = int(raw_volume)
                 except Exception:
